@@ -56,6 +56,34 @@ Expected result:
 - Decide whether `Operations Manager` can view invoice amounts.
 - Decide who can retry or disable automations.
 
+## Role Seed
+
+After the schema validation passes, run:
+
+```text
+sql/admin-portal/003_seed_portal_roles.sql
+```
+
+Expected result:
+
+- `dbo.portal_roles` contains:
+  - `admin`
+  - `finance_manager`
+  - `finance_operator`
+  - `operations_manager`
+  - `viewer`
+  - `external_accountant`
+- `dbo.portal_role_group_mappings` maps each role to its Microsoft Entra group.
+- `external_accountant` has `is_direct_login_enabled = 0` for MVP export-only access.
+
+Recommended MVP decisions:
+
+- External Accountant: exports only, no direct portal login.
+- Finance Operator: can edit review metadata, not financial fields.
+- Operations Manager: no invoice amount visibility by default.
+- Automation retry: Admin and Finance Manager.
+- Automation disable: Admin only.
+
 ## Evidence To Capture
 
 - Screenshot or copied output from validation sections 1 through 7.
@@ -66,3 +94,9 @@ Expected result:
 ## Current Local Finding
 
 The connection smoke test could not run in this environment because `AZURE_SQL_USERNAME` was not set in the active shell session. No database connection attempt was made.
+
+## Validation Result
+
+Status: passed.
+
+The Azure SQL core schema validation ran successfully in the `finance` database. The purchasing schema, dashboard views, relationship columns, and validation queries are ready for the next implementation steps.
