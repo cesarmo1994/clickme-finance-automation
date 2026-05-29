@@ -1,16 +1,13 @@
 # Web App
 
-Next.js with TypeScript workspace for the ClickMe Admin Portal frontend.
+Next.js frontend for the ClickMe Admin Portal.
 
-## Planned Responsibilities
+## Local Run
 
-- Admin portal shell and navigation
-- Executive dashboard pages
-- Invoice review interface
-- Vendor and procurement screens
-- Automation monitoring views
-- Microsoft Entra ID sign-in flow
+```powershell
+cd apps/web
+npm install
+npm run dev
+```
 
-## Initial Decision
-
-The frontend should consume backend API endpoints instead of connecting directly to Azure SQL.
+Set `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000` to connect to the local API.
