@@ -2,17 +2,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from ..db import get_connection
+from ..db import fetch_all
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
-
-
-def fetch_all(query: str) -> list[dict]:
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(query)
-        columns = [column[0] for column in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
 @router.get("/invoices")
