@@ -6,82 +6,52 @@
 - Database: `finance`
 - Existing table: `dbo.invoices`
 
-## Core Entities To Define
+## Existing Anchor Table
 
-### Companies
+`dbo.invoices` remains the system-of-record for processed invoice headers, parser metadata, PDF identity, duplicate prevention, amounts, raw text, and raw JSON.
 
-Legal and operating entities managed by the portal.
+## Core Tables
 
-Candidate table: `dbo.companies`
+- `dbo.companies`: legal and operating entities managed by ClickMe.
+- `dbo.vendors`: supplier master data and procurement metadata.
+- `dbo.expense_categories`: controlled expense taxonomy for reporting.
+- `dbo.invoice_line_items`: structured invoice lines linked to `dbo.invoices`.
+- `dbo.invoice_expense_classifications`: invoice-to-category mapping for reporting.
+- `dbo.payments`: payment status, due dates, payment amounts, and reconciliation metadata.
+- `dbo.documents`: metadata for PDFs, JSON files, contracts, and attachments.
+- `dbo.approval_workflows`: reusable approval workflow definitions.
+- `dbo.approval_requests`: approval instances tied to invoices, vendors, documents, or other entities.
+- `dbo.automation_runs`: execution history for parsers, watchers, and integrations.
+- `dbo.portal_users`: application user metadata mapped to Microsoft Entra ID.
+- `dbo.portal_roles`: application roles.
+- `dbo.portal_user_roles`: user-role assignments.
+- `dbo.audit_events`: append-only trail for sensitive actions.
 
-### Vendors
-
-Supplier master data used by invoices, purchases, contracts, and compliance.
-
-Candidate table: `dbo.vendors`
-
-### Invoices
-
-Already exists as `dbo.invoices`. Needs review against the final portal data model.
-
-### Invoice Line Items
-
-Detailed invoice lines extracted from PDFs or entered manually.
-
-Candidate table: `dbo.invoice_line_items`
-
-### Payments
-
-Payment status, payment date, method, references, and reconciliation metadata.
-
-Candidate table: `dbo.payments`
-
-### Purchase Requests
-
-Internal purchase requests or approvals before invoice receipt.
-
-Candidate table: `dbo.purchase_requests`
-
-### Documents
-
-Shared metadata for PDFs, contracts, legal documents, and uploaded attachments.
-
-Candidate table: `dbo.documents`
-
-### Automation Runs
-
-Execution log for parsers, watchers, integrations, and recurring jobs.
-
-Candidate table: `dbo.automation_runs`
-
-### Users And Roles
-
-Portal user profiles and role assignments. Identity should remain in Microsoft Entra ID, while the portal stores application-level metadata.
-
-Candidate tables:
-
-- `dbo.portal_users`
-- `dbo.portal_roles`
-- `dbo.portal_user_roles`
-
-### Audit Events
-
-Append-only record of sensitive actions.
-
-Candidate table: `dbo.audit_events`
-
-## Dashboard Views To Define
+## Dashboard Views
 
 - `dbo.vw_invoice_summary`
 - `dbo.vw_invoice_vendor_spend`
 - `dbo.vw_invoice_monthly_trend`
 - `dbo.vw_invoice_processing_quality`
+- `dbo.vw_invoice_category_spend`
 - `dbo.vw_automation_run_health`
 - `dbo.vw_accounts_payable_status`
 
 ## Deduplication Principles
 
-- Keep `sha256` uniqueness for file-level duplicates.
-- Keep `dedup_key` uniqueness for invoice-level duplicates when vendor, invoice number, date, and amount are available.
+- Keep `dbo.invoices.sha256` uniqueness for file-level invoice duplicates.
+- Keep `dbo.invoices.dedup_key` filtered uniqueness for invoice-level duplicates.
+- Keep `dbo.documents.sha256` filtered uniqueness for document-level duplicates when a hash exists.
 - Store raw parser output in JSON for traceability.
-- Never insert dashboard aggregates directly; generate them from views.
+- Do not insert dashboard aggregates directly; generate them from views.
+
+## Portal Integration Principles
+
+- The portal should read dashboard data through API endpoints backed by SQL views.
+- The parser can continue writing to `dbo.invoices` without needing to know the full portal schema.
+- Vendor matching can begin by normalized vendor name and evolve into explicit `vendor_id` references later.
+- Microsoft Entra ID remains the identity source; portal tables store app-level metadata and roles.
+
+## Script Location
+
+`sql/admin-portal/001_core_schema_and_views.sql`
