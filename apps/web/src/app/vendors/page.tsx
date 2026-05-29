@@ -5,7 +5,7 @@ export default async function VendorsPage() {
   const vendors = await fetchApi<VendorRow[]>("/api/vendors", []);
 
   return (
-    <AppShell title="Vendors">
+    <AppShell active="Vendors" title="Vendors">
       <section className="section">
         <div className="table-wrap">
           <table>
