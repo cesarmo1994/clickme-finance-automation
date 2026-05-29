@@ -2,7 +2,7 @@ import { AppShell } from "../components/AppShell";
 
 export default function AutomationsPage() {
   return (
-    <AppShell title="Automations">
+    <AppShell active="Automations" title="Automations">
       <section className="section">
         <div className="table-wrap">
           <table>
