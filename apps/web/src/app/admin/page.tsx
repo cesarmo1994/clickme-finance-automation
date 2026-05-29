@@ -2,7 +2,7 @@ import { AppShell } from "../components/AppShell";
 
 export default function AdminPage() {
   return (
-    <AppShell title="Admin">
+    <AppShell active="Admin" title="Admin">
       <section className="section">
         <div className="table-wrap">
           <table>
