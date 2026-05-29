@@ -2,7 +2,7 @@ import { AppShell } from "../components/AppShell";
 
 export default function ReportsPage() {
   return (
-    <AppShell title="Reports">
+    <AppShell active="Reports" title="Reports">
       <section className="section">
         <div className="metric-grid">
           <div className="metric">
