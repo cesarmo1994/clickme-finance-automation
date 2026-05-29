@@ -4,8 +4,9 @@
   Target database: finance
   Run after dbo.invoices exists.
 
-  This script is intentionally idempotent where practical. It creates the core
-  tables needed by the Admin Portal and read-only views for dashboards.
+  This script creates the core tables needed by the Admin Portal and read-only
+  views for dashboards. It complements dbo.invoices; it does not replace the
+  current invoice parser storage table.
 */
 
 /* Core master data */
@@ -59,6 +60,23 @@ BEGIN
 END;
 GO
 
+IF OBJECT_ID(N'dbo.expense_categories', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.expense_categories
+    (
+        expense_category_id BIGINT IDENTITY(1,1) NOT NULL,
+        category_key NVARCHAR(80) NOT NULL,
+        category_name NVARCHAR(160) NOT NULL,
+        parent_expense_category_id BIGINT NULL,
+        is_active BIT NOT NULL CONSTRAINT DF_expense_categories_is_active DEFAULT 1,
+        created_at_utc DATETIMEOFFSET(0) NOT NULL CONSTRAINT DF_expense_categories_created_at_utc DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_expense_categories PRIMARY KEY CLUSTERED (expense_category_id),
+        CONSTRAINT UQ_expense_categories_category_key UNIQUE (category_key),
+        CONSTRAINT FK_expense_categories_parent FOREIGN KEY (parent_expense_category_id) REFERENCES dbo.expense_categories(expense_category_id)
+    );
+END;
+GO
+
 /* Invoice related detail tables */
 
 IF OBJECT_ID(N'dbo.invoice_line_items', N'U') IS NULL
@@ -68,6 +86,7 @@ BEGIN
         invoice_line_item_id BIGINT IDENTITY(1,1) NOT NULL,
         invoice_id BIGINT NOT NULL,
         line_number INT NOT NULL,
+        expense_category_id BIGINT NULL,
         description NVARCHAR(1000) NULL,
         service_period_start DATE NULL,
         service_period_end DATE NULL,
@@ -81,9 +100,30 @@ BEGIN
         created_at_utc DATETIMEOFFSET(0) NOT NULL CONSTRAINT DF_invoice_line_items_created_at_utc DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_invoice_line_items PRIMARY KEY CLUSTERED (invoice_line_item_id),
         CONSTRAINT FK_invoice_line_items_invoices FOREIGN KEY (invoice_id) REFERENCES dbo.invoices(invoice_id),
+        CONSTRAINT FK_invoice_line_items_expense_categories FOREIGN KEY (expense_category_id) REFERENCES dbo.expense_categories(expense_category_id),
         CONSTRAINT UQ_invoice_line_items_invoice_line UNIQUE (invoice_id, line_number),
         CONSTRAINT CK_invoice_line_items_currency_code CHECK (currency_code IS NULL OR currency_code LIKE '[A-Z][A-Z][A-Z]'),
         CONSTRAINT CK_invoice_line_items_raw_line_json CHECK (raw_line_json IS NULL OR ISJSON(raw_line_json) = 1)
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.invoice_expense_classifications', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.invoice_expense_classifications
+    (
+        invoice_expense_classification_id BIGINT IDENTITY(1,1) NOT NULL,
+        invoice_id BIGINT NOT NULL,
+        expense_category_id BIGINT NOT NULL,
+        classification_source NVARCHAR(40) NOT NULL CONSTRAINT DF_invoice_expense_classifications_source DEFAULT N'manual',
+        confidence_score DECIMAL(5,4) NULL,
+        notes NVARCHAR(1000) NULL,
+        created_at_utc DATETIMEOFFSET(0) NOT NULL CONSTRAINT DF_invoice_expense_classifications_created_at_utc DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_invoice_expense_classifications PRIMARY KEY CLUSTERED (invoice_expense_classification_id),
+        CONSTRAINT FK_invoice_expense_classifications_invoices FOREIGN KEY (invoice_id) REFERENCES dbo.invoices(invoice_id),
+        CONSTRAINT FK_invoice_expense_classifications_categories FOREIGN KEY (expense_category_id) REFERENCES dbo.expense_categories(expense_category_id),
+        CONSTRAINT UQ_invoice_expense_classifications_invoice_category UNIQUE (invoice_id, expense_category_id),
+        CONSTRAINT CK_invoice_expense_classifications_confidence CHECK (confidence_score IS NULL OR confidence_score BETWEEN 0 AND 1)
     );
 END;
 GO
@@ -133,13 +173,51 @@ BEGIN
         created_at_utc DATETIMEOFFSET(0) NOT NULL CONSTRAINT DF_documents_created_at_utc DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_documents PRIMARY KEY CLUSTERED (document_id),
         CONSTRAINT FK_documents_invoices FOREIGN KEY (invoice_id) REFERENCES dbo.invoices(invoice_id),
-        CONSTRAINT FK_documents_vendors FOREIGN KEY (vendor_id) REFERENCES dbo.vendors(vendor_id),
-        CONSTRAINT UQ_documents_sha256 UNIQUE (sha256)
+        CONSTRAINT FK_documents_vendors FOREIGN KEY (vendor_id) REFERENCES dbo.vendors(vendor_id)
     );
 END;
 GO
 
 /* Operations and portal governance */
+
+IF OBJECT_ID(N'dbo.approval_workflows', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.approval_workflows
+    (
+        approval_workflow_id BIGINT IDENTITY(1,1) NOT NULL,
+        workflow_key NVARCHAR(80) NOT NULL,
+        workflow_name NVARCHAR(160) NOT NULL,
+        entity_type NVARCHAR(120) NOT NULL,
+        is_active BIT NOT NULL CONSTRAINT DF_approval_workflows_is_active DEFAULT 1,
+        workflow_json NVARCHAR(MAX) NULL,
+        created_at_utc DATETIMEOFFSET(0) NOT NULL CONSTRAINT DF_approval_workflows_created_at_utc DEFAULT SYSUTCDATETIME(),
+        updated_at_utc DATETIMEOFFSET(0) NOT NULL CONSTRAINT DF_approval_workflows_updated_at_utc DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_approval_workflows PRIMARY KEY CLUSTERED (approval_workflow_id),
+        CONSTRAINT UQ_approval_workflows_workflow_key UNIQUE (workflow_key),
+        CONSTRAINT CK_approval_workflows_json CHECK (workflow_json IS NULL OR ISJSON(workflow_json) = 1)
+    );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.approval_requests', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.approval_requests
+    (
+        approval_request_id BIGINT IDENTITY(1,1) NOT NULL,
+        approval_workflow_id BIGINT NOT NULL,
+        entity_type NVARCHAR(120) NOT NULL,
+        entity_id NVARCHAR(120) NOT NULL,
+        approval_status NVARCHAR(40) NOT NULL CONSTRAINT DF_approval_requests_status DEFAULT N'pending',
+        requested_by_portal_user_id BIGINT NULL,
+        requested_at_utc DATETIMEOFFSET(0) NOT NULL CONSTRAINT DF_approval_requests_requested_at_utc DEFAULT SYSUTCDATETIME(),
+        resolved_by_portal_user_id BIGINT NULL,
+        resolved_at_utc DATETIMEOFFSET(0) NULL,
+        notes NVARCHAR(MAX) NULL,
+        CONSTRAINT PK_approval_requests PRIMARY KEY CLUSTERED (approval_request_id),
+        CONSTRAINT FK_approval_requests_workflows FOREIGN KEY (approval_workflow_id) REFERENCES dbo.approval_workflows(approval_workflow_id)
+    );
+END;
+GO
 
 IF OBJECT_ID(N'dbo.automation_runs', N'U') IS NULL
 BEGIN
@@ -175,8 +253,7 @@ BEGIN
         created_at_utc DATETIMEOFFSET(0) NOT NULL CONSTRAINT DF_portal_users_created_at_utc DEFAULT SYSUTCDATETIME(),
         updated_at_utc DATETIMEOFFSET(0) NOT NULL CONSTRAINT DF_portal_users_updated_at_utc DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_portal_users PRIMARY KEY CLUSTERED (portal_user_id),
-        CONSTRAINT UQ_portal_users_email UNIQUE (email),
-        CONSTRAINT UQ_portal_users_entra_object_id UNIQUE (entra_object_id)
+        CONSTRAINT UQ_portal_users_email UNIQUE (email)
     );
 END;
 GO
@@ -239,6 +316,14 @@ GO
 
 /* Helpful indexes */
 
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UQ_documents_sha256_not_null' AND object_id = OBJECT_ID(N'dbo.documents'))
+    CREATE UNIQUE INDEX UQ_documents_sha256_not_null ON dbo.documents(sha256) WHERE sha256 IS NOT NULL;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'UQ_portal_users_entra_object_id_not_null' AND object_id = OBJECT_ID(N'dbo.portal_users'))
+    CREATE UNIQUE INDEX UQ_portal_users_entra_object_id_not_null ON dbo.portal_users(entra_object_id) WHERE entra_object_id IS NOT NULL;
+GO
+
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_invoice_line_items_invoice_id' AND object_id = OBJECT_ID(N'dbo.invoice_line_items'))
     CREATE INDEX IX_invoice_line_items_invoice_id ON dbo.invoice_line_items(invoice_id);
 GO
@@ -253,6 +338,10 @@ GO
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_audit_events_entity' AND object_id = OBJECT_ID(N'dbo.audit_events'))
     CREATE INDEX IX_audit_events_entity ON dbo.audit_events(entity_type, entity_id, event_at_utc DESC);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_approval_requests_entity' AND object_id = OBJECT_ID(N'dbo.approval_requests'))
+    CREATE INDEX IX_approval_requests_entity ON dbo.approval_requests(entity_type, entity_id, approval_status);
 GO
 
 /* Dashboard views */
@@ -286,14 +375,14 @@ GO
 
 CREATE OR ALTER VIEW dbo.vw_invoice_monthly_trend AS
 SELECT
-    DATEFROMPARTS(YEAR(COALESCE(invoice_date, document_date, created_at_utc)), MONTH(COALESCE(invoice_date, document_date, created_at_utc)), 1) AS invoice_month,
+    DATEFROMPARTS(YEAR(COALESCE(invoice_date, document_date, CAST(created_at_utc AS date))), MONTH(COALESCE(invoice_date, document_date, CAST(created_at_utc AS date))), 1) AS invoice_month,
     currency_code,
     COUNT_BIG(*) AS invoice_count,
     SUM(COALESCE(total_amount, amount_due, amount_paid, 0)) AS total_amount,
     SUM(CASE WHEN needs_review = 1 THEN 1 ELSE 0 END) AS needs_review_count
 FROM dbo.invoices
 GROUP BY
-    DATEFROMPARTS(YEAR(COALESCE(invoice_date, document_date, created_at_utc)), MONTH(COALESCE(invoice_date, document_date, created_at_utc)), 1),
+    DATEFROMPARTS(YEAR(COALESCE(invoice_date, document_date, CAST(created_at_utc AS date))), MONTH(COALESCE(invoice_date, document_date, CAST(created_at_utc AS date))), 1),
     currency_code;
 GO
 
@@ -307,6 +396,21 @@ SELECT
     AVG(CAST(confidence_score AS DECIMAL(9,4))) AS avg_confidence_score
 FROM dbo.invoices
 GROUP BY parser_name, parser_version, processing_status;
+GO
+
+CREATE OR ALTER VIEW dbo.vw_invoice_category_spend AS
+SELECT
+    c.category_key,
+    c.category_name,
+    i.currency_code,
+    COUNT_BIG(DISTINCT i.invoice_id) AS invoice_count,
+    SUM(COALESCE(i.total_amount, i.amount_due, i.amount_paid, 0)) AS total_amount
+FROM dbo.invoices AS i
+INNER JOIN dbo.invoice_expense_classifications AS x
+    ON x.invoice_id = i.invoice_id
+INNER JOIN dbo.expense_categories AS c
+    ON c.expense_category_id = x.expense_category_id
+GROUP BY c.category_key, c.category_name, i.currency_code;
 GO
 
 CREATE OR ALTER VIEW dbo.vw_automation_run_health AS
