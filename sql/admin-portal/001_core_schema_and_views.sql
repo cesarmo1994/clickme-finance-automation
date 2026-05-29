@@ -1,13 +1,33 @@
 /*
-  ClickMe Admin Portal core schema and dashboard views.
+  ClickMe Admin Portal purchasing schema and dashboard views.
 
   Target database: finance
-  Run after dbo.invoices exists.
+  Run after the invoice parser storage table exists.
 
-  This script creates the core tables needed by the Admin Portal and read-only
-  views for dashboards. It complements dbo.invoices; it does not replace the
-  current invoice parser storage table.
+  This script creates the purchasing tables needed by the Admin Portal and
+  read-only views for dashboards. It complements dbo.purch_invoices; it does not
+  replace the current invoice parser storage table.
+
+  Scope note:
+  - dbo.purch_invoices stores purchase invoices / supplier invoices.
+  - Sales invoices should be modeled later in a separate table, not mixed here.
 */
+
+/* Align the existing parser table with the purchase/sales naming convention.
+   Existing foreign keys should not exist yet when this script is first run. */
+
+IF OBJECT_ID(N'dbo.purch_invoices', N'U') IS NULL
+   AND OBJECT_ID(N'dbo.invoices', N'U') IS NOT NULL
+BEGIN
+    EXEC sp_rename N'dbo.invoices', N'purch_invoices';
+END;
+GO
+
+IF OBJECT_ID(N'dbo.purch_invoices', N'U') IS NULL
+BEGIN
+    THROW 51000, 'dbo.purch_invoices was not found. Create or rename the purchase invoice parser table before running this script.', 1;
+END;
+GO
 
 /* Core master data */
 
@@ -77,6 +97,42 @@ BEGIN
 END;
 GO
 
+/* Extend the current parser-owned dbo.purch_invoices table with purchase-portal
+   relationships. The automation processes supplier invoices received by ClickMe.
+
+   Sales invoices should be modeled later in a separate table, for example
+   dbo.sales_invoices, instead of mixing sales and purchases here. */
+
+IF COL_LENGTH(N'dbo.purch_invoices', N'company_id') IS NULL
+BEGIN
+    ALTER TABLE dbo.purch_invoices
+        ADD company_id BIGINT NULL;
+END;
+GO
+
+IF COL_LENGTH(N'dbo.purch_invoices', N'vendor_id') IS NULL
+BEGIN
+    ALTER TABLE dbo.purch_invoices
+        ADD vendor_id BIGINT NULL;
+END;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = N'FK_purch_invoices_companies')
+BEGIN
+    ALTER TABLE dbo.purch_invoices
+        ADD CONSTRAINT FK_purch_invoices_companies
+        FOREIGN KEY (company_id) REFERENCES dbo.companies(company_id);
+END;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = N'FK_purch_invoices_vendors')
+BEGIN
+    ALTER TABLE dbo.purch_invoices
+        ADD CONSTRAINT FK_purch_invoices_vendors
+        FOREIGN KEY (vendor_id) REFERENCES dbo.vendors(vendor_id);
+END;
+GO
+
 /* Invoice related detail tables */
 
 IF OBJECT_ID(N'dbo.invoice_line_items', N'U') IS NULL
@@ -99,7 +155,7 @@ BEGIN
         raw_line_json NVARCHAR(MAX) NULL,
         created_at_utc DATETIMEOFFSET(0) NOT NULL CONSTRAINT DF_invoice_line_items_created_at_utc DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_invoice_line_items PRIMARY KEY CLUSTERED (invoice_line_item_id),
-        CONSTRAINT FK_invoice_line_items_invoices FOREIGN KEY (invoice_id) REFERENCES dbo.invoices(invoice_id),
+        CONSTRAINT FK_invoice_line_items_purch_invoices FOREIGN KEY (invoice_id) REFERENCES dbo.purch_invoices(invoice_id),
         CONSTRAINT FK_invoice_line_items_expense_categories FOREIGN KEY (expense_category_id) REFERENCES dbo.expense_categories(expense_category_id),
         CONSTRAINT UQ_invoice_line_items_invoice_line UNIQUE (invoice_id, line_number),
         CONSTRAINT CK_invoice_line_items_currency_code CHECK (currency_code IS NULL OR currency_code LIKE '[A-Z][A-Z][A-Z]'),
@@ -120,7 +176,7 @@ BEGIN
         notes NVARCHAR(1000) NULL,
         created_at_utc DATETIMEOFFSET(0) NOT NULL CONSTRAINT DF_invoice_expense_classifications_created_at_utc DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_invoice_expense_classifications PRIMARY KEY CLUSTERED (invoice_expense_classification_id),
-        CONSTRAINT FK_invoice_expense_classifications_invoices FOREIGN KEY (invoice_id) REFERENCES dbo.invoices(invoice_id),
+        CONSTRAINT FK_invoice_expense_classifications_purch_invoices FOREIGN KEY (invoice_id) REFERENCES dbo.purch_invoices(invoice_id),
         CONSTRAINT FK_invoice_expense_classifications_categories FOREIGN KEY (expense_category_id) REFERENCES dbo.expense_categories(expense_category_id),
         CONSTRAINT UQ_invoice_expense_classifications_invoice_category UNIQUE (invoice_id, expense_category_id),
         CONSTRAINT CK_invoice_expense_classifications_confidence CHECK (confidence_score IS NULL OR confidence_score BETWEEN 0 AND 1)
@@ -135,6 +191,7 @@ BEGIN
         payment_id BIGINT IDENTITY(1,1) NOT NULL,
         payment_guid UNIQUEIDENTIFIER NOT NULL CONSTRAINT DF_payments_payment_guid DEFAULT NEWID(),
         invoice_id BIGINT NULL,
+        company_id BIGINT NULL,
         vendor_id BIGINT NULL,
         payment_status NVARCHAR(40) NOT NULL CONSTRAINT DF_payments_payment_status DEFAULT N'planned',
         payment_date DATE NULL,
@@ -148,7 +205,8 @@ BEGIN
         created_at_utc DATETIMEOFFSET(0) NOT NULL CONSTRAINT DF_payments_created_at_utc DEFAULT SYSUTCDATETIME(),
         updated_at_utc DATETIMEOFFSET(0) NOT NULL CONSTRAINT DF_payments_updated_at_utc DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_payments PRIMARY KEY CLUSTERED (payment_id),
-        CONSTRAINT FK_payments_invoices FOREIGN KEY (invoice_id) REFERENCES dbo.invoices(invoice_id),
+        CONSTRAINT FK_payments_purch_invoices FOREIGN KEY (invoice_id) REFERENCES dbo.purch_invoices(invoice_id),
+        CONSTRAINT FK_payments_companies FOREIGN KEY (company_id) REFERENCES dbo.companies(company_id),
         CONSTRAINT FK_payments_vendors FOREIGN KEY (vendor_id) REFERENCES dbo.vendors(vendor_id),
         CONSTRAINT CK_payments_currency_code CHECK (currency_code IS NULL OR currency_code LIKE '[A-Z][A-Z][A-Z]')
     );
@@ -162,6 +220,7 @@ BEGIN
         document_id BIGINT IDENTITY(1,1) NOT NULL,
         document_guid UNIQUEIDENTIFIER NOT NULL CONSTRAINT DF_documents_document_guid DEFAULT NEWID(),
         invoice_id BIGINT NULL,
+        company_id BIGINT NULL,
         vendor_id BIGINT NULL,
         document_type NVARCHAR(80) NOT NULL,
         file_name NVARCHAR(260) NOT NULL,
@@ -172,7 +231,8 @@ BEGIN
         retention_status NVARCHAR(40) NULL,
         created_at_utc DATETIMEOFFSET(0) NOT NULL CONSTRAINT DF_documents_created_at_utc DEFAULT SYSUTCDATETIME(),
         CONSTRAINT PK_documents PRIMARY KEY CLUSTERED (document_id),
-        CONSTRAINT FK_documents_invoices FOREIGN KEY (invoice_id) REFERENCES dbo.invoices(invoice_id),
+        CONSTRAINT FK_documents_purch_invoices FOREIGN KEY (invoice_id) REFERENCES dbo.purch_invoices(invoice_id),
+        CONSTRAINT FK_documents_companies FOREIGN KEY (company_id) REFERENCES dbo.companies(company_id),
         CONSTRAINT FK_documents_vendors FOREIGN KEY (vendor_id) REFERENCES dbo.vendors(vendor_id)
     );
 END;
@@ -328,6 +388,10 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_invoice_line_items_in
     CREATE INDEX IX_invoice_line_items_invoice_id ON dbo.invoice_line_items(invoice_id);
 GO
 
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_purch_invoices_company_vendor_date' AND object_id = OBJECT_ID(N'dbo.purch_invoices'))
+    CREATE INDEX IX_purch_invoices_company_vendor_date ON dbo.purch_invoices(company_id, vendor_id, invoice_date);
+GO
+
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_payments_invoice_status' AND object_id = OBJECT_ID(N'dbo.payments'))
     CREATE INDEX IX_payments_invoice_status ON dbo.payments(invoice_id, payment_status, payment_date);
 GO
@@ -344,100 +408,122 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_approval_requests_ent
     CREATE INDEX IX_approval_requests_entity ON dbo.approval_requests(entity_type, entity_id, approval_status);
 GO
 
-/* Dashboard views */
+/* Dashboard model views */
 
-CREATE OR ALTER VIEW dbo.vw_invoice_summary AS
+CREATE OR ALTER VIEW dbo.vendor_dim AS
 SELECT
-    COUNT_BIG(*) AS invoice_count,
-    SUM(CASE WHEN needs_review = 1 THEN 1 ELSE 0 END) AS needs_review_count,
-    SUM(CASE WHEN processing_status = N'parsed' THEN 1 ELSE 0 END) AS parsed_count,
-    SUM(CASE WHEN processing_status <> N'parsed' THEN 1 ELSE 0 END) AS not_parsed_count,
-    SUM(COALESCE(total_amount, amount_due, amount_paid, 0)) AS total_amount,
-    MIN(invoice_date) AS earliest_invoice_date,
-    MAX(invoice_date) AS latest_invoice_date
-FROM dbo.invoices;
-GO
-
-CREATE OR ALTER VIEW dbo.vw_invoice_vendor_spend AS
-SELECT
-    COALESCE(v.vendor_id, 0) AS vendor_id,
-    COALESCE(v.vendor_name, i.vendor_name, N'Unknown') AS vendor_name,
-    i.currency_code,
-    COUNT_BIG(*) AS invoice_count,
-    SUM(COALESCE(i.total_amount, i.amount_due, i.amount_paid, 0)) AS total_amount,
-    MAX(i.invoice_date) AS latest_invoice_date,
-    SUM(CASE WHEN i.needs_review = 1 THEN 1 ELSE 0 END) AS needs_review_count
-FROM dbo.invoices AS i
+    COALESCE(v.vendor_id, 0) AS vendor_key,
+    COALESCE(v.vendor_name, source_vendors.vendor_name, N'Unknown') AS vendor_name,
+    COALESCE(v.normalized_vendor_name, UPPER(LTRIM(RTRIM(source_vendors.vendor_name))), N'UNKNOWN') AS normalized_vendor_name,
+    v.tax_id,
+    v.primary_email,
+    v.primary_phone,
+    v.website_url,
+    v.country_code,
+    v.default_currency_code,
+    v.procurement_status,
+    v.risk_level
+FROM (
+    SELECT DISTINCT
+        vendor_id,
+        NULLIF(LTRIM(RTRIM(vendor_name)), N'') AS vendor_name
+    FROM dbo.purch_invoices
+) AS source_vendors
 LEFT JOIN dbo.vendors AS v
-    ON v.normalized_vendor_name = UPPER(LTRIM(RTRIM(i.vendor_name)))
-GROUP BY COALESCE(v.vendor_id, 0), COALESCE(v.vendor_name, i.vendor_name, N'Unknown'), i.currency_code;
+    ON v.vendor_id = source_vendors.vendor_id
+    OR (
+        source_vendors.vendor_id IS NULL
+        AND v.normalized_vendor_name = UPPER(LTRIM(RTRIM(source_vendors.vendor_name)))
+    );
 GO
 
-CREATE OR ALTER VIEW dbo.vw_invoice_monthly_trend AS
+CREATE OR ALTER VIEW dbo.date_dim AS
 SELECT
-    DATEFROMPARTS(YEAR(COALESCE(invoice_date, document_date, CAST(created_at_utc AS date))), MONTH(COALESCE(invoice_date, document_date, CAST(created_at_utc AS date))), 1) AS invoice_month,
-    currency_code,
-    COUNT_BIG(*) AS invoice_count,
-    SUM(COALESCE(total_amount, amount_due, amount_paid, 0)) AS total_amount,
-    SUM(CASE WHEN needs_review = 1 THEN 1 ELSE 0 END) AS needs_review_count
-FROM dbo.invoices
-GROUP BY
-    DATEFROMPARTS(YEAR(COALESCE(invoice_date, document_date, CAST(created_at_utc AS date))), MONTH(COALESCE(invoice_date, document_date, CAST(created_at_utc AS date))), 1),
-    currency_code;
+    CAST(CONVERT(char(8), source_dates.calendar_date, 112) AS int) AS date_key,
+    source_dates.calendar_date,
+    DATEPART(year, source_dates.calendar_date) AS calendar_year,
+    DATEPART(quarter, source_dates.calendar_date) AS calendar_quarter,
+    DATEPART(month, source_dates.calendar_date) AS month_number,
+    DATENAME(month, source_dates.calendar_date) AS month_name,
+    DATEFROMPARTS(YEAR(source_dates.calendar_date), MONTH(source_dates.calendar_date), 1) AS month_start_date,
+    EOMONTH(source_dates.calendar_date) AS month_end_date,
+    DATEPART(iso_week, source_dates.calendar_date) AS iso_week_number,
+    DATEPART(weekday, source_dates.calendar_date) AS weekday_number,
+    DATENAME(weekday, source_dates.calendar_date) AS weekday_name
+FROM (
+    SELECT DISTINCT invoice_date AS calendar_date
+    FROM dbo.purch_invoices
+    WHERE invoice_date IS NOT NULL
+
+    UNION
+
+    SELECT DISTINCT due_date AS calendar_date
+    FROM dbo.purch_invoices
+    WHERE due_date IS NOT NULL
+
+    UNION
+
+    SELECT DISTINCT paid_date AS calendar_date
+    FROM dbo.purch_invoices
+    WHERE paid_date IS NOT NULL
+
+    UNION
+
+    SELECT DISTINCT CAST(created_at_utc AS date) AS calendar_date
+    FROM dbo.purch_invoices
+    WHERE created_at_utc IS NOT NULL
+) AS source_dates;
 GO
 
-CREATE OR ALTER VIEW dbo.vw_invoice_processing_quality AS
+CREATE OR ALTER VIEW dbo.invoice_fact AS
 SELECT
-    parser_name,
-    parser_version,
-    processing_status,
-    COUNT_BIG(*) AS invoice_count,
-    SUM(CASE WHEN needs_review = 1 THEN 1 ELSE 0 END) AS needs_review_count,
-    AVG(CAST(confidence_score AS DECIMAL(9,4))) AS avg_confidence_score
-FROM dbo.invoices
-GROUP BY parser_name, parser_version, processing_status;
-GO
-
-CREATE OR ALTER VIEW dbo.vw_invoice_category_spend AS
-SELECT
-    c.category_key,
-    c.category_name,
+    i.invoice_id AS invoice_key,
+    i.invoice_guid,
+    COALESCE(i.vendor_id, v.vendor_id, 0) AS vendor_key,
+    i.company_id AS company_key,
+    CAST(CONVERT(char(8), COALESCE(i.invoice_date, i.document_date, CAST(i.created_at_utc AS date)), 112) AS int) AS invoice_date_key,
+    CASE WHEN i.due_date IS NULL THEN NULL ELSE CAST(CONVERT(char(8), i.due_date, 112) AS int) END AS due_date_key,
+    CASE WHEN i.paid_date IS NULL THEN NULL ELSE CAST(CONVERT(char(8), i.paid_date, 112) AS int) END AS paid_date_key,
+    i.invoice_number,
+    i.receipt_number,
+    i.billing_number,
+    i.document_type,
+    i.processing_status,
+    i.needs_review,
+    i.review_reason,
+    i.parser_name,
+    i.parser_version,
+    i.confidence_score,
     i.currency_code,
-    COUNT_BIG(DISTINCT i.invoice_id) AS invoice_count,
-    SUM(COALESCE(i.total_amount, i.amount_due, i.amount_paid, 0)) AS total_amount
-FROM dbo.invoices AS i
-INNER JOIN dbo.invoice_expense_classifications AS x
-    ON x.invoice_id = i.invoice_id
-INNER JOIN dbo.expense_categories AS c
-    ON c.expense_category_id = x.expense_category_id
-GROUP BY c.category_key, c.category_name, i.currency_code;
-GO
-
-CREATE OR ALTER VIEW dbo.vw_automation_run_health AS
-SELECT
-    automation_name,
-    MAX(started_at_utc) AS last_started_at_utc,
-    MAX(completed_at_utc) AS last_completed_at_utc,
-    SUM(CASE WHEN run_status = N'succeeded' THEN 1 ELSE 0 END) AS succeeded_runs,
-    SUM(CASE WHEN run_status <> N'succeeded' THEN 1 ELSE 0 END) AS non_succeeded_runs,
-    SUM(COALESCE(scanned_count, 0)) AS scanned_count,
-    SUM(COALESCE(processed_count, 0)) AS processed_count,
-    SUM(COALESCE(error_count, 0)) AS error_count
-FROM dbo.automation_runs
-GROUP BY automation_name;
-GO
-
-CREATE OR ALTER VIEW dbo.vw_accounts_payable_status AS
-SELECT
-    COALESCE(v.vendor_name, i.vendor_name, N'Unknown') AS vendor_name,
-    i.currency_code,
-    COUNT_BIG(*) AS invoice_count,
-    SUM(COALESCE(i.amount_due, i.total_amount, 0) - COALESCE(i.amount_paid, 0)) AS open_amount,
-    SUM(CASE WHEN i.due_date IS NOT NULL AND i.due_date < CONVERT(date, SYSUTCDATETIME()) THEN 1 ELSE 0 END) AS overdue_invoice_count,
-    MIN(i.due_date) AS next_due_date
-FROM dbo.invoices AS i
+    i.charges_amount,
+    i.credits_amount,
+    i.subtotal_amount,
+    i.tax_amount,
+    i.total_amount,
+    i.amount_due,
+    i.amount_paid,
+    i.balance_amount,
+    COALESCE(i.total_amount, i.amount_due, i.amount_paid, 0) AS recognized_amount,
+    COALESCE(i.amount_due, i.total_amount, 0) - COALESCE(i.amount_paid, 0) AS open_amount,
+    CASE
+        WHEN i.due_date IS NOT NULL
+             AND i.due_date < CONVERT(date, SYSUTCDATETIME())
+             AND COALESCE(i.amount_due, i.total_amount, 0) - COALESCE(i.amount_paid, 0) <> 0
+        THEN 1
+        ELSE 0
+    END AS is_overdue,
+    i.payment_status,
+    i.payment_method_brand,
+    i.payment_method_last4,
+    i.sha256,
+    i.dedup_key,
+    i.attachment_name,
+    i.source_document_path,
+    i.parsed_json_path,
+    i.created_at_utc,
+    i.updated_at_utc
+FROM dbo.purch_invoices AS i
 LEFT JOIN dbo.vendors AS v
-    ON v.normalized_vendor_name = UPPER(LTRIM(RTRIM(i.vendor_name)))
-WHERE COALESCE(i.amount_due, i.total_amount, 0) - COALESCE(i.amount_paid, 0) <> 0
-GROUP BY COALESCE(v.vendor_name, i.vendor_name, N'Unknown'), i.currency_code;
+    ON v.vendor_id = i.vendor_id
+    OR (i.vendor_id IS NULL AND v.normalized_vendor_name = UPPER(LTRIM(RTRIM(i.vendor_name))));
 GO
