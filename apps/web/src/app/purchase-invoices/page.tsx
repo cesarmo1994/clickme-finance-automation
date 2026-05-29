@@ -5,7 +5,7 @@ export default async function PurchaseInvoicesPage() {
   const invoices = await fetchApi<InvoiceRow[]>("/api/purchase-invoices", []);
 
   return (
-    <AppShell title="Purchase Invoices">
+    <AppShell active="Purchase Invoices" title="Purchase Invoices">
       <section className="section">
         <div className="table-wrap">
           <table>
