@@ -18,3 +18,5 @@ uvicorn app.main:app --reload --port 8000
 - `GET /api/dashboard/invoices`
 - `GET /api/dashboard/vendors`
 - `GET /api/dashboard/dates`
+- `GET /api/purchase-invoices`
+- `GET /api/vendors`
