@@ -1,16 +1,20 @@
 # API
 
-FastAPI workspace for the ClickMe Admin Portal backend.
+FastAPI backend for the ClickMe Admin Portal.
 
-## Planned Responsibilities
+## Local Run
 
-- Dashboard API endpoints
-- Invoice and vendor API endpoints
-- Azure SQL access layer
-- Microsoft Entra ID token validation
-- Role and permission checks
-- Automation run health endpoints
+```powershell
+cd apps/api
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
 
-## Initial Decision
+## Initial Endpoints
 
-The API is the only application layer that should read from or write to Azure SQL.
+- `GET /health`
+- `GET /api/dashboard/invoices`
+- `GET /api/dashboard/vendors`
+- `GET /api/dashboard/dates`
