@@ -9,18 +9,33 @@ const navItems = [
   { href: "/admin", label: "Admin" },
 ];
 
-export function AppShell({ children, title }: { children: ReactNode; title: string }) {
+export function AppShell({
+  active = "Dashboard",
+  children,
+  title,
+}: {
+  active?: string;
+  children: ReactNode;
+  title: string;
+}) {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand">ClickMe Admin</div>
+        <div className="brand">
+          <span>ClickMe</span>
+          <small>Admin Portal</small>
+        </div>
         <nav className="nav">
           {navItems.map((item) => (
-            <a href={item.href} key={item.label}>
+            <a aria-current={active === item.label ? "page" : undefined} href={item.href} key={item.label}>
               {item.label}
             </a>
           ))}
         </nav>
+        <div className="workspace-card">
+          <strong>Operations & Finance</strong>
+          <span>finance.database.windows.net</span>
+        </div>
       </aside>
       <main className="main">
         <header className="topbar">
